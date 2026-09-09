@@ -25,6 +25,11 @@ def main() -> int:
         print(f"{e.index:>3}  t{e.tick:<3} {e.kind:<10} {args}")
 
     print()
+    if trace.flags:
+        print("  !! OPERATING WITH FLAGS — the human needs to see this")
+        for fl in trace.flags:
+            print(f"     [{fl.severity.value}] {fl.code}  {fl.detail}")
+        print()
     print(f"pin           {trace.pin[:16]}")
     print(f"chain intact  {trace.verify_chain()}")
     print(f"termination   {trace.termination.value}")
