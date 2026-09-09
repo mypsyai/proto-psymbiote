@@ -43,6 +43,24 @@ class EnvironmentPort(Protocol):
     def capability_digest(self) -> str:
         """Stable digest of the capability map."""
 
+    def offered_capabilities(self) -> frozenset[str]:
+        """Every capability this Environment can ever hand out. Bounds the ceiling."""
+
+    def offered_actions(self) -> frozenset[str]:
+        """Every action this Environment can perform. Denominator for breadth."""
+
+    def capabilities_for(self, action: str) -> frozenset[str]:
+        """What one action costs. Empty if the action is unknown."""
+
+    def health(self) -> tuple[str, ...]:
+        """Harm codes. Non-empty stops the loop: memory, write space, thermal.
+
+        This is the only channel that can halt a run. Everything else degrades.
+        """
+
+    def can_grant(self, phase: Phase, action: str) -> bool:
+        """Predicate. Answers the composition question without allocating a grant."""
+
     def grant(self, phase: Phase, action: str) -> Grant | None:
         """Bound capability for one action in one phase. None means refuse."""
 

@@ -38,6 +38,25 @@ class ProposalKind(Enum):
     ACT = "ACT"
     ADVANCE = "ADVANCE"
     TERMINATE = "TERMINATE"
+    REPORT = "REPORT"
+
+
+class StallReason(Enum):
+    """Closed vocabulary for 'why am I not moving'.
+
+    The model is required to account for a stall before the runtime forces
+    progress past it. An enum, not prose: a stall report that arrived as a
+    sentence would be the first thing to cross the boundary uninspected, and
+    an unrecognised code is recorded as UNKNOWN rather than trusted.
+    """
+
+    BLOCKED_PRECONDITION = "BLOCKED_PRECONDITION"
+    NO_PERMITTED_ACTION = "NO_PERMITTED_ACTION"
+    CAPABILITY_MISSING = "CAPABILITY_MISSING"
+    AWAITING_AUTHORIZATION = "AWAITING_AUTHORIZATION"
+    AWAITING_INPUT = "AWAITING_INPUT"
+    OBJECTIVE_UNCLEAR = "OBJECTIVE_UNCLEAR"
+    UNKNOWN = "UNKNOWN"
 
 
 class Reason(Enum):
@@ -61,9 +80,20 @@ class Status(Enum):
 
 
 class Termination(Enum):
+    """Only the last two are catastrophic. Everything else finishes."""
+
     OBJECTIVE_COMPLETE = "OBJECTIVE_COMPLETE"
+    COMPLETE_DEGRADED = "COMPLETE_DEGRADED"
     BUDGET_EXHAUSTED = "BUDGET_EXHAUSTED"
     ATTESTATION_BROKEN = "ATTESTATION_BROKEN"
+    HARM_HALT = "HARM_HALT"
+
+
+class Severity(Enum):
+    """A flag is not a failure. The show goes on and says so."""
+
+    ADVISORY = "ADVISORY"
+    DEGRADED = "DEGRADED"
 
 
 def digest(value: object) -> str:
@@ -86,13 +116,32 @@ class Objective:
     objective_id: str
     target: str
     budget: int
+    breadth_limit: float = 0.30
+    breadth_floor: int = 5
+    """Reaching wide is the signature of an objective that is really several.
+    Both conditions must hold: more than `breadth_limit` of the offered
+    vocabulary AND at least `breadth_floor` distinct actions. A ratio alone is
+    meaningless over a two-action vocabulary, where every honest run is 100%.
+    Advisory, never a halt."""
+
+    stall_limit: int = 10
+    """Consecutive ticks with no state change before the runtime stops waiting.
+    A real model needs room to propose, be refused, and adjust; three was
+    aggressive enough to force it out of phases it was working in honestly.
+    On reaching the limit the model must file a StallReason, which is flagged
+    and recorded, and then progress is forced."""
 
     def __post_init__(self) -> None:
         if self.budget < 1:
             raise ValueError("budget must be >= 1")
+        if not 0 < self.breadth_limit <= 1:
+            raise ValueError("breadth_limit must be in (0, 1]")
+        if self.breadth_floor < 1 or self.stall_limit < 1:
+            raise ValueError("breadth_floor and stall_limit must be >= 1")
 
     def to_digest(self) -> str:
-        return digest([self.objective_id, self.target, self.budget])
+        return digest([self.objective_id, self.target, self.budget,
+                       self.breadth_limit, self.breadth_floor, self.stall_limit])
 
 
 @dataclass(frozen=True)
@@ -115,6 +164,12 @@ class Proposal:
             raise ValueError("ACT proposal requires an action")
         if self.kind is not ProposalKind.ACT and self.action:
             raise ValueError("only ACT proposals carry an action")
+        if self.kind is ProposalKind.REPORT:
+            args = dict(self.args)
+            if set(args) != {"stall"}:
+                raise ValueError("REPORT proposal carries exactly one arg: stall")
+            if args["stall"] not in {r.value for r in StallReason}:
+                raise ValueError("stall reason must come from the closed vocabulary")
         for key, value in self.args:
             _check_scalar(key, value)
 
@@ -145,12 +200,26 @@ class Result:
 
 
 @dataclass(frozen=True)
+class Flag:
+    """A named condition the system is operating in spite of."""
+
+    severity: Severity
+    code: str
+    detail: str = ""
+
+    def __post_init__(self) -> None:
+        _check_scalar("code", self.code)
+        _check_scalar("detail", self.detail)
+
+
+@dataclass(frozen=True)
 class FrameworkView:
     """Everything the Framework may see. Closed and finite by construction."""
 
     phase: Phase
     tick: int
     completed_actions: frozenset[str]
+    flags: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -166,6 +235,12 @@ class ModelContext:
     permitted_actions: tuple[str, ...]
     completed_actions: tuple[str, ...]
     unmet: tuple[str, ...]
+    unsatisfiable: tuple[str, ...]
+    flags: tuple[str, ...]
+    stall_ticks: int
+    report_required: bool
+    """True when the runtime has stopped waiting and needs an account of the
+    stall before it forces progress. The only tick where REPORT is admissible."""
     last_status: str
     tick: int
     budget: int
@@ -214,6 +289,11 @@ class Trace:
     termination: Termination | None = None
     final_phase: Phase = Phase.INTENT
     ticks: int = 0
+    flags: list[Flag] = field(default_factory=list)
+
+    @property
+    def degraded(self) -> bool:
+        return any(f.severity is Severity.DEGRADED for f in self.flags)
 
     def append(self, tick: int, kind: str, /, **payload: str | int | bool) -> Entry:
         prev = self.entries[-1].entry_hash if self.entries else self.pin
